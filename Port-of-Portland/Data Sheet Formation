@@ -1,0 +1,161 @@
+
+Data Sheet Formation — Port of Portland Bid Project
+
+Author: Grace Fell
+Project: Oregon State University MBA Capstone — BANA577
+
+Description:
+    Extracts and structures unstructured bid tabulation data from multi-sheet
+    Excel files into a clean, analysis-ready master dataset.
+
+    Bid tab Excel files are notoriously inconsistent each sheet represents
+    a different bid with varying layouts, dynamic bidder columns, and no
+    guaranteed header position. This script handles that variability
+    programmatically rather than relying on hardcoded row or column positions.
+
+Pipeline:
+    1. Load multi-sheet Excel bid tab file
+    2. Dynamically detect header row position per sheet
+    3. Extract bidder names from the row above the header
+    4. Parse line item data with unit and total prices per bidder
+    5. Compile all sheets into a single master DataFrame
+    6. Convert numeric columns and export to Excel
+
+Input:  unclean_bidtabs.xlsx  (multi-sheet Excel file with raw bid tab data)
+Output: cleaned_bidtab_master.xlsx  (structured master dataset)
+
+Note: Input file path should be updated to reflect your local directory.
+
+
+import pandas as pd
+
+#  1. LOAD EXCEL FILE
+
+# Update this path to point to your local copy of the bid tab file
+# Using a relative path here for portability place the input file
+# in the same directory as this script before running
+input_file = "unclean_bidtabs.xlsx"
+
+xls = pd.ExcelFile(input_file)
+
+# Initialize master list to collect structured rows across all sheets
+all_rows = []
+
+#  2. PROCESS EACH SHEET
+
+for sheet_name in xls.sheet_names:
+
+    # Parse sheet without assuming a header row this will be detected manually
+    # header= None treats the first row as data, not column names
+    df = xls.parse(sheet_name, header=None)
+
+    # 2a. DYNAMICALLY DETECT HEADER ROW
+    # Bid tab layouts vary by sheet, the header row is not always in the same
+    # position. We search for a row containing "item no" (case insensitive)
+    # which is the standard first column header in Port of Portland bid tabs.
+    # This approach helps with inconsistent formatting across sheets.
+    header_row_index = None
+    for i in range(len(df)):
+        row = df.iloc[i].astype(str).str.lower().tolist()
+        if any("item no" in cell for cell in row):
+            header_row_index = i
+            break
+
+    # Skip this sheet entirely if no recognizable item table is found
+    # Some sheets may contain summary data or cover pages not bid line items
+    if header_row_index is None:
+        print(f"  Skipping sheet '{sheet_name}' — no item table detected")
+        continue
+
+    # 2b. EXTRACT BIDDER NAMES 
+    # In Port of Portland bid tabs, bidder names appear in the row immediately
+    # ABOVE the column header row. Each bidder occupies two columns:
+    # unit price and total price. We extract bidder names by iterating through
+    # the pre-header row in pairs starting from column 4 (after static columns).
+    bidder_row = df.iloc[header_row_index - 1]
+
+    # Define static column positions consistent across all Port of Portland bid tabs
+    item_no_col = 0       # Item number
+    desc_col = 1          # Item description
+    qty_col = 2           # Estimated quantity
+    units_col = 3         # Unit of measure
+    bidder_start_col = 4  # Bid pricing columns begin here — varies by number of bidders
+
+    # Extract bidder names with their corresponding unit price and total price columns
+    # Bidders are laid out in pairs: [BidderName UnitPrice | BidderName TotalPrice]
+    bidder_names = []
+    col = bidder_start_col
+
+    while col + 1 < len(bidder_row):
+        name = str(bidder_row[col]).strip()
+
+        # Skip columns with no name or pandas "Unnamed" placeholder headers
+        # These indicate empty bidder slots in the layout
+        if name and "unnamed" not in name.lower():
+            bidder_names.append((name, col, col + 1))  # (name, unit_col, total_col)
+
+        col += 2  # Advance by 2 each bidder spans exactly two columns
+
+    #  2c. EXTRACT LINE ITEM DATA
+    # Iterate through all rows after the header row and extract bid line items.
+    # For each line item, capture the price data for every identified bidder.
+    # This produces one row per item-bidder combination in the master dataset.
+    for i in range(header_row_index + 1, len(df)):
+        row = df.iloc[i]
+        item_no = row[item_no_col]
+
+        # Skip rows with no item number these are typically blank rows,
+        # subtotals, or section dividers within the bid tab layout
+        if pd.isna(item_no) or not str(item_no).strip():
+            continue
+
+        item_desc = row[desc_col]
+        est_qty = row[qty_col]
+        units = row[units_col]
+
+        # Extract price data for each bidder identified in step 2b
+        for bidder_name, unit_col, total_col in bidder_names:
+
+            # Safely retrieve price values guard against rows shorter than expected
+            unit_price = row[unit_col] if unit_col < len(row) else None
+            total_price = row[total_col] if total_col < len(row) else None
+
+            # Skip bidder entries where both prices are missing
+            # This occurs when a bidder did not submit pricing for a specific item
+            if pd.isna(unit_price) and pd.isna(total_price):
+                continue
+
+            # Append structured record to master list
+            all_rows.append({
+                "ItemNo": item_no,
+                "ItemDescription": item_desc,
+                "EstQuantity": est_qty,
+                "Units": units,
+                "BidderName": bidder_name,
+                "UnitPrice": unit_price,
+                "TotalPrice": total_price,
+                "SourcePDF": sheet_name  # Track which bid tab each row came from
+            })
+
+# 3. COMPILE AND CLEAN MASTER DATASET
+
+# Convert list of row dictionaries to DataFrame
+master_df = pd.DataFrame(all_rows)
+
+# Convert price and quantity columns to numeric
+# errors='coerce' replaces unparseable values (text, symbols) with NaN
+# rather than raising an error handles real world data inconsistencies
+master_df["UnitPrice"] = pd.to_numeric(master_df["UnitPrice"], errors='coerce')
+master_df["TotalPrice"] = pd.to_numeric(master_df["TotalPrice"], errors='coerce')
+master_df["EstQuantity"] = pd.to_numeric(master_df["EstQuantity"], errors='coerce')
+
+# 4. EXPORT
+
+output_file = "cleaned_bidtab_master.xlsx"
+master_df.to_excel(output_file, index=False)
+
+print(f" Data extraction complete")
+print(f"   Total records extracted: {len(master_df):,}")
+print(f"   Sheets processed: {len(xls.sheet_names)}")
+print(f"   Unique bidders identified: {master_df['BidderName'].nunique()}")
+print(f"   Output saved to: {output_file}")
