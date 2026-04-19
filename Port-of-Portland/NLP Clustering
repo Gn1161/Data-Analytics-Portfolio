@@ -1,0 +1,258 @@
+
+NLP Clustering — Port of Portland Bid Tab Project
+
+Author: Grace Fell
+Project: Oregon State University MBA Capstone — BANA577
+
+Description:
+    First-pass NLP clustering pipeline that segments Port of Portland
+    bid line item descriptions into meaningful material and work categories
+    using K-means clustering on TF-IDF vectorized text.
+
+    Bid tabulation data contains thousands of line item descriptions written
+    in inconsistent, abbreviated, and domain-specific language. This script
+    transforms that unstructured text into structured clusters that enable:
+        - Automated categorization of bid items by material type
+        - Apples-to-apples contractor price comparisons within categories
+        - Pattern identification across multiple bid tabs
+
+    This is the first script in a two-stage clustering pipeline:
+        Stage 1 (this script): Initial clustering with silhouette evaluation
+        Stage 2 (Clustering_2.py): Refined clustering with subclustering
+                                   and business-meaningful cluster labels
+
+Pipeline:
+    1. Load standardized bid tab dataset
+    2. Deduplicate item descriptions per bidder and source
+    3. Preprocess text: clean, tokenize, lemmatize, remove stopwords
+    4. TF-IDF vectorization of cleaned descriptions
+    5. K-means clustering with silhouette score evaluation
+    6. Flag outlier items too dissimilar for any cluster
+    7. Export clustered dataset and cluster definitions
+
+Input:  bidder_names_standardized.xlsx  (output of Standardized_Bidder_Names.py)
+Output: clustered_full_dataset.xlsx, cluster_definitions.xlsx
+
+Note: File paths are relative — place input file in same directory as script.
+
+
+import pandas as pd
+import numpy as np
+import os
+import re
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+# 1. NLTK SETUP 
+
+# Download required NLTK resources on first run
+# wordnet: lexical database used for lemmatization
+# omw-1.4: Open Multilingual Wordnet, extends lemmatization coverage
+# stopwords: common English words to exclude from analysis
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
+nltk.download('stopwords', quiet=True)
+
+lemmatizer = WordNetLemmatizer()
+stop_words = set(stopwords.words('english'))
+
+# 2. LOAD DATA 
+
+input_file = "bidder_names_standardized.xlsx"
+df = pd.read_excel(input_file)
+
+print(f"✅ Data loaded: {len(df):,} records")
+
+# 3. DEDUPLICATE ITEM DESCRIPTIONS 
+
+# Remove duplicate item descriptions per bidder and source PDF
+
+# The same line item description appears multiple times in the raw dataset
+# once for each bidder who submitted pricing for that item. For clustering
+# purposes we only need each unique description once, regardless of how
+# many bidders priced it. Clustering on duplicates would inflate the
+# influence of commonly bid items and skew cluster sizes artificially.
+
+# We deduplicate on the combination of ItemDescription + StandardizedBidderName
+# + SourcePDF to preserve the source context for later merging.
+
+df_unique = df.drop_duplicates(
+    subset=['ItemDescription', 'StandardizedBidderName', 'SourcePDF']
+)
+
+print(f"✅ Deduplicated: {len(df_unique):,} unique item-bidder-source combinations")
+
+# 4. TEXT PREPROCESSING 
+
+def preprocess(text):
+    
+    Clean and normalize bid item description text for TF-IDF vectorization.
+
+    Preprocessing steps:
+        1. Remove non-alphabetic characters: strips numbers, symbols, and
+           special characters that appear in bid descriptions (item codes,
+           measurements like "6-inch", unit abbreviations like "#4 rebar")
+           These add noise without contributing semantic meaning for clustering.
+
+        2. Lowercase: ensures "Asphalt", "ASPHALT", and "asphalt" are
+           treated as the same token by the vectorizer.
+
+        3. Tokenize: splits text into individual words for processing.
+
+        4. Lemmatize: reduces words to their base dictionary form:
+           "paving" → "pave", "pipes" → "pipe", "removing" → "remove"
+           This ensures semantically identical terms cluster together
+           even when expressed in different grammatical forms.
+
+        5. Remove stopwords: eliminates common English words ("the", "and",
+           "of") that appear everywhere and carry no discriminative signal
+           for distinguishing material types and work categories.
+
+    Why lemmatization over stemming?
+        Stemming aggressively chops word endings and often produces
+        non-words ("paving" → "pav"). Lemmatization uses a lexical
+        database to return actual dictionary words ("paving" → "pave"),
+        producing cleaner, more interpretable cluster keywords.
+    
+    # Remove non-alphabetic characters and lowercase
+    text = re.sub(r'[^a-zA-Z\s]', '', str(text).lower())
+
+    # Tokenize, lemmatize, and remove stopwords in a single pass
+    tokens = text.split()
+    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words]
+
+    return ' '.join(tokens)
+
+# Apply preprocessing to all unique item descriptions
+df_unique['Cleaned_Description'] = df_unique['ItemDescription'].apply(preprocess)
+print(f"✅ Text preprocessing complete")
+
+# 5. TF-IDF VECTORIZATION 
+
+# Convert preprocessed text to numerical TF-IDF feature matrix
+
+# max_df=0.85: Removes terms appearing in more than 85% of descriptions.
+#   Words this common across the dataset provide no discriminative signal
+#   for distinguishing between material categories.
+
+# min_df=2: Removes terms appearing in fewer than 2 descriptions.
+#   Extremely rare terms are likely typos or one-off abbreviations
+#   that won't generalize across the full bid tab dataset.
+
+# stop_words='english': Additional English stopword removal layer on top
+#   of the preprocessing step would catch any common words that survived
+#   the earlier cleaning pass.
+
+vectorizer = TfidfVectorizer(
+    stop_words='english',
+    max_df=0.85,
+    min_df=2
+)
+
+X = vectorizer.fit_transform(df_unique['Cleaned_Description'])
+print(f" TF-IDF vectorization complete: {X.shape[1]} features")
+
+# 6. K-MEANS CLUSTERING 
+
+# Cluster item descriptions into 45 initial groups
+
+# Why 45 clusters as the starting point?
+#   Port of Portland bid tabs span a wide range of construction project types:
+#   roadwork, electrical, drainage, signage, and more. A larger initial cluster
+#   count captures granular material-level distinctions that a smaller count
+#   would merge together. This script feeds into Clustering_2.py which uses
+#   silhouette scoring to find the optimal cluster count empirically.
+
+# n_init=10: Runs K-means 10 times with different random initializations
+#   and selects the best result. Reduces sensitivity to random starting
+#   centroid placement — important for reproducible, stable clusters.
+
+# random_state=42: Fixed seed for reproducibility across runs.
+
+num_clusters = 45
+kmeans = KMeans(
+    n_clusters=num_clusters,
+    random_state=42,
+    n_init=10  # Run 10 initializations and select the best — reduces instability
+)
+
+cluster_labels = kmeans.fit_predict(X)
+
+# 7. SILHOUETTE SCORE & OUTLIER FLAGGING
+
+# Evaluate clustering quality with silhouette score
+
+# Silhouette score measures how well each item fits its assigned cluster
+# relative to neighboring clusters:
+#   +1.0 = item is perfectly matched to its cluster
+#    0.0 = item sits on the boundary between two clusters
+#   -1.0 = item is likely assigned to the wrong cluster
+
+# A higher average silhouette score indicates more cohesive, well-separated
+# clusters — meaning the material categories are meaningfully distinct.
+
+silhouette_avg = silhouette_score(X, cluster_labels)
+print(f" Silhouette Score: {silhouette_avg:.4f}")
+print(f"   (Closer to 1.0 = better defined clusters)")
+
+# Calculate each item's distance to its assigned cluster centroid
+distances = kmeans.transform(X).min(axis=1)
+
+# Flag items in the top 20% of centroid distances as potential outliers
+
+# Items with very high distances to their cluster centroid are highly
+# dissimilar to everything else in the dataset — likely unique one-off
+# bid items that don't belong to any standard material category.
+# Flagging rather than deleting these preserves them for manual review
+# while keeping them out of standard cluster analysis.
+
+threshold = np.percentile(distances, 80)  # Top 20% farthest = potential outliers
+
+df_unique['Cluster'] = cluster_labels
+df_unique.loc[distances > threshold, 'Cluster'] = np.nan  # Flag as outlier
+
+outlier_count = df_unique['Cluster'].isna().sum()
+print(f" Outlier flagging complete: {outlier_count} items flagged as too dissimilar for clustering")
+
+# 8. EXPORT
+
+# Merge cluster assignments back to full dataset
+df_with_clusters = df.merge(
+    df_unique[['ItemDescription', 'StandardizedBidderName', 'SourcePDF', 'Cluster']],
+    on=['ItemDescription', 'StandardizedBidderName', 'SourcePDF'],
+    how='left'
+)
+
+# Export clustered full dataset
+output_dir = "."
+output_path_full = os.path.join(output_dir, "clustered_full_dataset.xlsx")
+df_with_clusters.to_excel(output_path_full, index=False)
+
+# Export cluster definitions — top keywords per cluster
+def get_top_keywords(model, feature_names, min_weight=0.1):
+    """Extract top keywords for each cluster based on centroid weights."""
+    keywords = {}
+    for i in range(model.n_clusters):
+        center_weights = model.cluster_centers_[i]
+        top_indices = np.where(center_weights >= min_weight)[0]
+        keywords[i] = [feature_names[ind] for ind in top_indices]
+    return keywords
+
+feature_names = vectorizer.get_feature_names_out()
+top_keywords = get_top_keywords(kmeans, feature_names)
+
+cluster_definitions = pd.DataFrame([
+    {'Cluster': k, 'TopKeywords': ', '.join(v)} for k, v in top_keywords.items()
+])
+
+output_path_definitions = os.path.join(output_dir, "cluster_definitions.xlsx")
+cluster_definitions.to_excel(output_path_definitions, index=False)
+
+print(f"\n Pipeline complete")
+print(f"   Clustered dataset saved to: {output_path_full}")
+print(f"   Cluster definitions saved to: {output_path_definitions}")
+print(f"   Silhouette Score: {silhouette_avg:.4f}")
