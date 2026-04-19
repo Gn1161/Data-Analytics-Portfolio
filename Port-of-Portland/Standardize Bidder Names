@@ -1,0 +1,176 @@
+
+Standardized Bidder Names — Port of Portland Bid Tab Project
+
+Author: Grace Fell
+Project: Oregon State University MBA Capstone — BANA577
+
+Description:
+    Entity resolution pipeline that standardizes inconsistent contractor
+    (bidder) name formats across Port of Portland bid tabulation data.
+
+    In real world procurement data, the same contractor may appear under
+    dozens of slightly different name variations across bid tabs:
+        "Smith Construction LLC"
+        "Smith Construction, LLC"
+        "SMITH CONSTRUCTION LLC"
+        "Smith Const. LLC"
+
+    Without standardization, these are treated as separate entities —
+    making contractor performance analysis, pricing comparisons, and
+    competitive bid analysis unreliable.
+
+    This script solves that problem through a two-stage pipeline:
+        Stage 1 — Normalize: Strip formatting inconsistencies
+        Stage 2 — Fuzzy Match: Cluster near-duplicate names using
+                  token sort ratio matching (rapidfuzz)
+        Stage 3 — Finalize: Restore proper case and company suffixes
+
+Pipeline:
+    1. Load structured bid tab master dataset
+    2. Normalize all bidder names (lowercase, remove punctuation)
+    3. Fuzzy match normalized names to build deduplication mapping
+    4. Apply finalized standardized names with proper formatting
+    5. Export enriched dataset for downstream analysis
+
+Input:  cleaned_bidtab_master.xlsx  (output of Data_Sheet_Formation.py)
+Output: bidder_names_standardized.xlsx  (dataset with standardized bidder names)
+
+Note: File paths are relative — place input file in the same directory
+      as this script before running.
+
+import pandas as pd
+import re
+from rapidfuzz import process, fuzz
+
+# 1. LOAD DATA
+
+# Input is the structured master dataset produced by Data_Sheet_Formation.py
+input_file = "cleaned_bidtab_master.xlsx"
+df = pd.read_excel(input_file)
+
+print(f" Data loaded: {len(df):,} records, {df['BidderName'].nunique()} unique raw bidder names")
+
+# 2. NORMALIZATION FUNCTION 
+def normalize_name(name):
+    
+    Normalize a bidder name by removing formatting inconsistencies
+    that would prevent accurate fuzzy matching.
+
+    Normalization steps:
+        1. Handle null values return empty string
+        2. Lowercase eliminates case sensitivity differences
+           ("Smith LLC" vs "SMITH LLC" vs "smith llc")
+        3. Replace '&' with 'and'  standardizes ampersand usage
+           ("Smith & Jones" vs "Smith and Jones")
+        4. Remove commas and periods  eliminates punctuation variation
+           ("Smith Construction, LLC" vs "Smith Construction LLC")
+           ("Smith Const." vs "Smith Const")
+        5. Collapse extra whitespace  handles inconsistent spacing
+           ("Smith  Construction" vs "Smith Construction")
+
+    Why normalize before fuzzy matching?
+        Fuzzy matching works on string similarity. Without normalization,
+        "SMITH LLC" and "smith llc" would score low similarity despite
+        being identical companies. Normalization levels the playing field
+        so the fuzzy matcher focuses on meaningful name differences,
+        not formatting artifacts.
+    
+    if pd.isna(name):
+        return ""
+    name = name.lower()
+    name = re.sub(r"&", " and ", name)       # Standardize ampersands
+    name = re.sub(r"[\.,]", "", name)         # Remove commas and periods
+    name = re.sub(r"\s+", " ", name).strip()  # Collapse extra whitespace
+    return name
+
+# Apply normalization to all bidder names
+df['NormalizedBidderName'] = df['BidderName'].apply(normalize_name)
+
+# 3. FUZZY MATCHING — BUILD DEDUPLICATION MAPPING
+
+# Extract unique normalized names to deduplicate
+unique_names = df['NormalizedBidderName'].unique()
+
+# Initialize empty mapping — will store {variant_name: canonical_name}
+name_mapping = {}
+
+# Iterate through each unique normalized name and find its best match
+# in the already-processed canonical names using fuzzy string matching
+for name in unique_names:
+
+    # process.extractOne finds the single best match from the candidate list
+    # scorer=fuzz.token_sort_ratio sorts tokens alphabetically before comparing
+    # This handles word order differences:
+    #   "Portland Construction Smith" vs "Smith Construction Portland"
+    #   would score high with token_sort_ratio despite different word order
+    result = process.extractOne(
+        name,
+        list(name_mapping.keys()),
+        scorer=fuzz.token_sort_ratio
+    )
+
+    if result and result[1] >= 90:
+        # Score >= 90 means near-identical match — map to existing canonical name
+        # Threshold of 90 was chosen to catch clear duplicates (typos, minor
+        # formatting differences) while avoiding false positives between
+        # similarly named but distinct contractors
+        name_mapping[name] = name_mapping[result[0]]
+    else:
+        # No close match found — treat this name as a new canonical entry
+        name_mapping[name] = name
+
+print(f" Fuzzy matching complete")
+print(f"   Raw unique names: {len(unique_names)}")
+print(f"   Canonical names after deduplication: {len(set(name_mapping.values()))}")
+
+#  4. FINALIZE STANDARDIZED NAMES
+
+def finalize_name(name):
+    """
+    Apply final formatting to the deduplicated canonical name:
+        1. Look up the canonical name from the fuzzy match mapping
+        2. Apply title case — capitalizes each word properly
+        3. Restore correct formatting for common company suffixes
+           that title case would incorrectly format
+
+    Why suffix corrections are necessary:
+        Python's .title() method capitalizes the first letter of every word:
+            "smith construction llc" , "Smith Construction Llc"
+        But standard business formatting requires:
+            "Smith Construction LLC"  (not "Llc")
+            "Smith Construction Inc." (not "Inc")
+        The suffix_corrections dictionary handles these special cases explicitly.
+    """
+    # Retrieve canonical name from mapping, fall back to original if not found
+    name = name_mapping.get(normalize_name(name), name)
+
+    # Apply title case as baseline formatting
+    name = name.title()
+
+    # Correct common company suffix formatting that title case gets wrong
+    suffix_corrections = {
+        'Llc': 'LLC',          # Limited Liability Company
+        'Inc': 'Inc.',         # Incorporated
+        'Co': 'Co.',           # Company
+        'Corp': 'Corp.',       # Corporation
+        'Corporation': 'Corporation'  # No change needed — title case is correct
+    }
+
+    words = name.split()
+    for i, word in enumerate(words):
+        if word in suffix_corrections:
+            words[i] = suffix_corrections[word]
+
+    return ' '.join(words)
+
+# Apply finalized standardized name to every row in the dataset
+df['StandardizedBidderName'] = df['BidderName'].apply(finalize_name)
+
+# 5. EXPORT 
+
+output_file = "bidder_names_standardized.xlsx"
+df.to_excel(output_file, index=False)
+
+print(f" Bidder name standardization complete")
+print(f"   Standardized unique bidder names: {df['StandardizedBidderName'].nunique()}")
+print(f"   Output saved to: {output_file}")
