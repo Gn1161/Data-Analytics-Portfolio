@@ -1,0 +1,221 @@
+
+RAG Chatbot — Port of Portland Bid Tab Project
+
+Author: Grace Fell
+Project: Oregon State University MBA Capstone — BANA577
+
+Description:
+    AI-powered Retrieval-Augmented Generation (RAG) chatbot that enables
+    natural language querying of the full Port of Portland bid tabulation
+    database (2021-2024).
+
+    Traditional bid tab analysis requires analysts to manually search through
+    hundreds of PDF sheets to find specific contractors, items, or pricing.
+    This chatbot transforms that workflow allowing any stakeholder to ask
+    plain English questions and receive accurate, source-grounded answers
+    drawn directly from the bid data from the Excel sheet.
+
+    Example queries:
+        "Which contractors bid on airfield pavement projects in 2023?"
+        "What was the unit price for asphalt cold milling in Bid 2022-047?"
+        "Show me all bids that included electrical conduit work"
+
+How RAG Works:
+    Traditional LLMs (like GPT-4) are trained on general knowledge and cannot
+    answer questions about proprietary or domain-specific data. RAG solves this
+    by combining two components:
+
+        1. Retrieval: When a user asks a question, the system searches a vector
+           database of the actual bid data to find the most relevant records.
+           This is done using semantic similarity (embeddings) rather than
+           keyword matching, so "pipe installation" finds records about
+           "conduit work" and "plumbing materials" as well.
+
+        2. Generation: The retrieved records are passed to GPT-4 as context,
+           and the LLM generates a natural language answer grounded in the
+           actual data, not hallucinated from training data.
+
+    The result is a chatbot that can answer specific, accurate questions about
+    the bid database without requiring any SQL knowledge or manual Excel searching.
+
+Architecture:
+    Excel Bid Tabs -> LangChain Documents -> OpenAI Embeddings -> FAISS Vector Store
+    User Query -> Semantic Search -> Retrieved Context -> GPT-4 -> Natural Language Answer
+
+Prerequisites:
+    pip install langchain langchain-openai langchain-community faiss-cpu pandas openai
+
+Setup:
+    Set your OpenAI API key as an environment variable before running:
+        Windows:  set OPENAI_API_KEY=your_key_here
+        Mac/Linux: export OPENAI_API_KEY=your_key_here
+
+Input:  All 2021-2024 Bid Tabs (1).xlsx  (multi-sheet Excel bid tab file)
+        Place in the same directory as this script before running.
+
+import pandas as pd
+import os
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.chat_models import ChatOpenAI
+from langchain.chains import RetrievalQA
+
+#  1. API KEY CONFIGURATION 
+
+# IMPORTANT: Never hardcode API keys in source code.
+# Set your OpenAI API key as an environment variable before running this script.
+
+# To set the key temporarily in your terminal before running:
+#   Windows:   set OPENAI_API_KEY=sk-your-key-here
+#   Mac/Linux: export OPENAI_API_KEY=sk-your-key-here
+
+# Verify the key is set before proceeding
+if not os.environ.get("OPENAI_API_KEY"):
+    raise EnvironmentError(
+        "OpenAI API key not found. Please set the OPENAI_API_KEY environment variable "
+        "before running this script. See the docstring above for instructions."
+    )
+
+#  2. LOAD BID TAB DATA 
+
+input_file = "All 2021-2024 Bid Tabs (1).xlsx"
+xls = pd.ExcelFile(input_file)
+
+print(f"✅ Loaded bid tab file: {len(xls.sheet_names)} bid sheets found")
+print("Building document corpus for vector store...\n")
+
+#  3. CONVERT BID DATA TO LANGCHAIN DOCUMENTS 
+
+# Transform each row of each bid sheet into a LangChain Document object
+
+# Why convert to Documents?
+#   FAISS and LangChain require data in Document format, each Document
+#   has a page_content (the text to embed) and metadata (for source tracking).
+
+# Why format rows as natural language strings?
+#   OpenAI embeddings work on text. Converting each row to a structured
+#   sentence creates text that the embedding model can meaningfully encode
+#   into vector space for semantic similarity search.
+#
+# Why include sheet_name and row_index in metadata?
+#   Metadata enables the RAG chain to return source documents alongside
+#   answers, analysts can verify exactly which bid and row the answer
+#   came from, making the chatbot auditable and trustworthy.
+#
+# Why dropna(how='all')?
+#   Many bid tab sheets contain blank rows used for visual formatting.
+#   Dropping fully empty rows prevents meaningless Documents from being
+#   added to the vector store and consuming unnecessary embedding API calls.
+
+documents = []
+
+for sheet_name in xls.sheet_names:
+    sheet_df = xls.parse(sheet_name)
+
+    # Remove completely empty rows — formatting artifacts in bid tab layouts
+    sheet_df = sheet_df.dropna(how='all')
+
+    for idx, row in sheet_df.iterrows():
+        # Build natural language content string from row data
+        # Only include columns with actual values — skip NaN fields
+        content = (
+            f"This information is from Bid Number '{sheet_name}'. "
+            f"Row {idx} contains the following data: " +
+            ", ".join(
+                f"{col}: {val}"
+                for col, val in row.items()
+                if pd.notna(val)
+            )
+        )
+
+        documents.append(
+            Document(
+                page_content=content,
+                metadata={
+                    "sheet_name": sheet_name,
+                    "row_index": idx
+                }
+            )
+        )
+
+print(f" Document corpus built: {len(documents):,} documents from {len(xls.sheet_names)} bid sheets")
+
+#  4. GENERATE EMBEDDINGS & BUILD FAISS VECTOR STORE 
+
+# Embed all documents and store in a FAISS vector database
+
+# OpenAI Embeddings convert each Document's text into a high-dimensional
+# vector that captures semantic meaning. Similar texts produce similar
+# vectors — so "asphalt paving" and "pavement resurfacing" will have
+# vectors close together in the space.
+
+# FAISS (Facebook AI Similarity Search) stores these vectors and enables
+# extremely fast similarity search at query time — finding the most
+# semantically relevant documents for any user question in milliseconds.
+
+# NOTE: This step makes API calls to OpenAI for each document and may
+# take several minutes depending on the size of the bid tab dataset.
+
+print("Generating embeddings and building FAISS vector store...")
+print("(This may take several minutes depending on dataset size)\n")
+
+embeddings = OpenAIEmbeddings()
+vectorstore = FAISS.from_documents(documents, embeddings)
+
+print(" Vector store built successfully")
+
+#  5. BUILD RAG RETRIEVAL CHAIN 
+
+# Assemble the RAG chain combining retrieval and generation
+
+# RetrievalQA combines two components:
+
+#   Retriever (vectorstore.as_retriever()):
+#       At query time, converts the user question to an embedding and
+#       searches FAISS for the most semantically similar bid documents.
+#       Returns the top-k most relevant documents as context.
+
+#   LLM (ChatOpenAI with GPT-4):
+#       Receives the user question AND the retrieved bid documents as context.
+#       Generates a natural language answer grounded in the actual data.
+#       GPT-4 is used for its superior reasoning on structured data tasks.
+
+#   return_source_documents=True:
+#       Returns the specific bid records used to generate each answer —
+#       critical for auditability in a procurement context.
+
+llm = ChatOpenAI(model="gpt-4")
+
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=vectorstore.as_retriever(),
+    return_source_documents=True
+)
+
+print(" RAG chain initialized — chatbot ready\n")
+
+#  6. INTERACTIVE TERMINAL INTERFACE 
+
+print("=" * 60)
+print("Port of Portland Bid Intelligence Chatbot")
+print("=" * 60)
+print("Ask questions about bids, contractors, items, pricing, and dates.")
+print("Examples:")
+print("  'Which contractors bid on electrical work in 2022?'")
+print("  'What was the unit price for asphalt milling in bid 2023-015?'")
+print("  'Show me all bids that included traffic control items'")
+print("\nType 'exit' or 'quit' to end the session.\n")
+
+while True:
+    query = input("You: ").strip()
+
+    if query.lower() in ['exit', 'quit']:
+        print("Session ended.")
+        break
+
+    if not query:
+        continue
+
+    response = qa_chain.invoke(query)
+    print(f"\nAnswer: {response['result']}\n")
