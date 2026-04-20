@@ -1,0 +1,98 @@
+Bid Count Trend Analysis - Port of Portland Bid Tab Project
+
+Author: Grace Fell
+Project: Oregon State University MBA Capstone - BANA577
+ 
+Description:
+    Time series analysis of Port of Portland activity,
+    visualizing bid volume trends over time to identify seasonal patterns,
+     cycle peaks, and periods of elevated infrastructure investment.
+ 
+    This analysis answers a key activity question:
+    When does the Port of Portland go to market most frequently,
+    and are there patterns in bid timing that contractors can anticipate?
+ 
+Business Value:
+    Understanding bid timing patterns helps contractors plan capacity,
+    allows  teams to identify bottlenecks, and supports
+    strategic planning around infrastructure investment cycles.
+ 
+Input:  Material Level Base - Final Draft1.xlsx
+Output: bid_count_trend.png, bid_count_trend.xlsx
+
+ 
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+ 
+# Load data from the material level base file
+# Using relative path for portability
+input_file = "Material Level Base - Final Draft1.xlsx"
+xls = pd.ExcelFile(input_file)
+df = xls.parse('in')
+ 
+# Parse and clean Opening Bid Date
+# errors='coerce' converts unparseable dates to NaT rather than raising an error
+# dropna removes rows where date could not be parsed - preserves data integrity
+df['Opening Bid Date'] = pd.to_datetime(df['Opening Bid Date'], errors='coerce')
+df = df.dropna(subset=['Opening Bid Date'])
+ 
+print("Date range: {} to {}".format(
+    df['Opening Bid Date'].min().strftime('%Y-%m'),
+    df['Opening Bid Date'].max().strftime('%Y-%m')
+))
+print("Total records after date cleaning: {:,}".format(len(df)))
+ 
+# Group by month to count bids per period
+# freq='M' aggregates to monthly intervals
+# This smooths daily noise and reveals meaningful procurement cycles
+bid_counts = (
+    df.groupby(pd.Grouper(key='Opening Bid Date', freq='M'))
+    .size()
+    .reset_index(name='Bid Count')
+)
+ 
+print("Monthly bid counts calculated: {} months".format(len(bid_counts)))
+ 
+# Build time series visualization
+plt.figure(figsize=(12, 6))
+ 
+sns.lineplot(
+    data=bid_counts,
+    x='Opening Bid Date',
+    y='Bid Count',
+    marker='o',
+    color='steelblue',
+    linewidth=2,
+    markersize=6
+)
+ 
+# Add mean reference line to show average monthly bid activity
+mean_bids = bid_counts['Bid Count'].mean()
+plt.axhline(
+    y=mean_bids,
+    color='gray',
+    linestyle='--',
+    alpha=0.7,
+    label='Monthly Average ({:.1f})'.format(mean_bids)
+)
+ 
+plt.title('Bid Count Over Time - Port of Portland 2021-2024', fontsize=14, fontweight='bold')
+plt.xlabel('Date')
+plt.ylabel('Number of Bids')
+plt.xticks(rotation=45)
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
+ 
+plt.savefig('bid_count_trend.png', dpi=150, bbox_inches='tight')
+# plt.show()
+ 
+bid_counts.to_excel('bid_count_trend.xlsx', index=False)
+ 
+print("Visualization saved to: bid_count_trend.png")
+print("Data saved to: bid_count_trend.xlsx")
+print("Monthly average bid count: {:.1f}".format(mean_bids))
+print("Peak month: {}".format(
+    bid_counts.loc[bid_counts['Bid Count'].idxmax(), 'Opening Bid Date'].strftime('%Y-%m')
+))
