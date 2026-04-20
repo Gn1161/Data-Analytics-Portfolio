@@ -1,9 +1,8 @@
 # Data-Analytics-Portfolio
-Job Portfolio with different projects I have worked on for skill credibilty 
-Overview
+Job Portfolio with different projects I have worked on for skill credibilty
 This portfolio demonstrates end-to-end data analytics capabilities across
 pipeline engineering, predictive modeling, NLP, SQL, and emerging AI
-applications. Projects span procurement intelligence, financial risk
+applications. Projects span bid tab database, financial risk
 analytics, and fraud detection - reflecting a focus on building data
 products that drive real business decisions.
 Where proprietary data was involved, projects have been rebuilt using
