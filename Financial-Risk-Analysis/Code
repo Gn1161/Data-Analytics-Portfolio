@@ -1,0 +1,313 @@
+
+Financial Risk Analysis - Loan Approval 
+Author: Grace Fell
+Portfolio Project: Data Analytics Portfolio
+
+Description:
+    End-to-end data pipeline that predicts
+    loan approval outcomes based on applicant financial risk profiles based on a dataset taken
+    of Kaggle.
+
+    Demonstrates an analytics lifecycle relevant credit risk:
+        - ETL pipeline ingesting and validating raw financial data
+        - SQL database integration for structured data storage and querying
+        - data transformation
+        - Logistic regression modeling for binary classification
+        - Risk score analysis and model evaluation
+
+
+Input:  Loan.csv
+Output: financial_risk.db, loan_predictions.csv,
+        financial_risk_model_results.png
+
+
+import pandas as pd
+import numpy as np
+import sqlite3
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+    ConfusionMatrixDisplay
+)
+import warnings
+warnings.filterwarnings('ignore')
+
+
+# 1  Load the Data
+
+# File was uploaded from the Kaggle resources
+
+input_file = "Loan.csv"
+
+
+df_raw = pd.read_csv(input_file)
+
+print("  Raw records loaded: {:,}".format(len(df_raw)))
+print("  Features: {}".format(df_raw.shape[1]))
+print("  Approval rate: {:.1f}%".format(df_raw['LoanApproved'].mean() * 100))
+
+# 2 Transform the Data
+
+
+
+df = df_raw.copy()
+
+# Parse date and extract year and month for analysis
+df['ApplicationDate'] = pd.to_datetime(df['ApplicationDate'], errors='coerce')
+df['ApplicationYear'] = df['ApplicationDate'].dt.year
+df['ApplicationMonth'] = df['ApplicationDate'].dt.month
+
+# Handle missing values, always critical with dataset
+# Numeric: fill with median - robust to outliers in financial data
+# Categorical: fill with mode - most common category
+numeric_cols = df.select_dtypes(include=[np.number]).columns
+categorical_cols = df.select_dtypes(include=['object']).columns
+
+for col in numeric_cols:
+    if df[col].isnull().sum() > 0:
+        df[col] = df[col].fillna(df[col].median())
+
+for col in categorical_cols:
+    if col != 'ApplicationDate' and df[col].isnull().sum() > 0:
+        df[col] = df[col].fillna(df[col].mode()[0])
+
+missing_after = df.isnull().sum().sum()
+print("  Missing values after imputation: {}".format(missing_after))
+
+#Important data points when looking at finanical risk. This section was harder for me
+come up with and opportunity could be here 
+
+# Loan-to-Income Ratio: How large is the loan relative to annual income?
+df['LoanToIncomeRatio'] = df['LoanAmount'] / (df['AnnualIncome'] + 1)
+
+# Asset Coverage Ratio: Can total assets cover total liabilities?
+# Ratio > 1 means assets exceed liabilities
+df['AssetCoverageRatio'] = df['TotalAssets'] / (df['TotalLiabilities'] + 1)
+
+# Monthly Payment Burden: Share of monthly income going to loan payment
+df['MonthlyPaymentBurden'] = df['MonthlyLoanPayment'] / (df['MonthlyIncome'] + 1)
+
+# High Risk Flag: Combines poor credit score, prior defaults, and bankruptcy
+df['HighRiskFlag'] = (
+    (df['CreditScore'] < 600) &
+    (df['PreviousLoanDefaults'] > 0) &
+    (df['BankruptcyHistory'] == 1)
+).astype(int)
+
+print("  Important Data Points Complete - {} total features".format(df.shape[1]))
+print("  High risk applicants: {:,} ({:.1f}%)".format(
+    df['HighRiskFlag'].sum(), df['HighRiskFlag'].mean() * 100))
+
+# categorical variables
+categorical_features = [
+    'EmploymentStatus', 'EducationLevel', 'MaritalStatus',
+    'HomeOwnershipStatus', 'LoanPurpose'
+]
+df_encoded = pd.get_dummies(df, columns=categorical_features, drop_first=True)
+print("  Encoding complete - {} features after encoding".format(df_encoded.shape[1]))
+
+# 3 SQLite Database work
+
+db_path = "financial_risk.db"
+conn = sqlite3.connect(db_path)
+
+df.to_sql('loan_applications', conn, if_exists='replace', index=False)
+print("  Table loan_applications written: {:,} records".format(len(df)))
+
+#4 SQL Querying
+
+
+# Query 1: Risk profile by employment status
+sql_employment = (
+    "SELECT EmploymentStatus, "
+    "COUNT(*) AS TotalApplicants, "
+    "ROUND(AVG(CreditScore), 1) AS AvgCreditScore, "
+    "ROUND(AVG(AnnualIncome), 0) AS AvgAnnualIncome, "
+    "ROUND(AVG(DebtToIncomeRatio), 3) AS AvgDTI, "
+    "ROUND(AVG(RiskScore), 1) AS AvgRiskScore, "
+    "SUM(LoanApproved) AS TotalApproved, "
+    "ROUND(100.0 * SUM(LoanApproved) / COUNT(*), 1) AS ApprovalRate "
+    "FROM loan_applications "
+    "GROUP BY EmploymentStatus "
+    "ORDER BY AvgRiskScore DESC"
+)
+risk_by_employment = pd.read_sql_query(sql_employment, conn)
+print("\n  Risk Profile by Employment Status:")
+print(risk_by_employment.to_string(index=False))
+
+# Query 2: Risk by loan purpose
+sql_purpose = (
+    "SELECT LoanPurpose, "
+    "COUNT(*) AS TotalApplications, "
+    "ROUND(AVG(LoanAmount), 0) AS AvgLoanAmount, "
+    "ROUND(AVG(RiskScore), 1) AS AvgRiskScore, "
+    "ROUND(100.0 * SUM(LoanApproved) / COUNT(*), 1) AS ApprovalRate, "
+    "ROUND(AVG(InterestRate), 3) AS AvgInterestRate "
+    "FROM loan_applications "
+    "GROUP BY LoanPurpose "
+    "ORDER BY AvgRiskScore DESC"
+)
+risk_by_purpose = pd.read_sql_query(sql_purpose, conn)
+print("\n  Risk Analysis by Loan Purpose:")
+print(risk_by_purpose.to_string(index=False))
+
+# Query 3: Approval rate by credit score band
+sql_credit = (
+    'select * from (SELECT '
+    'CASE '
+    'WHEN CreditScore >= 750 THEN 'Excellent 750+' '
+    'WHEN CreditScore >= 700 THEN 'Good 700-749' '
+    'WHEN CreditScore >= 650 THEN 'Fair 650-699' '
+    'WHEN CreditScore >= 600 THEN 'Poor 600-649' '
+    'ELSE 'Very Poor under 600' '
+    'END AS CreditScoreBand, '
+    'COUNT(*) AS TotalApplicants, '
+    'ROUND(AVG(RiskScore), 1) AS AvgRiskScore, '
+    'ROUND(100.0 * SUM(LoanApproved) / COUNT(*), 1) AS ApprovalRate, '
+    'ROUND(AVG(LoanAmount), 0) AS AvgLoanAmount '
+    'FROM loan_applications '
+    'GROUP BY CreditScoreBand '
+    'ORDER BY MIN(CreditScore) DESC) la'
+)
+credit_band_analysis = pd.read_sql_query(sql_credit, conn)
+print("\n  Approval Rate by Credit Score Band:")
+print(credit_band_analysis.to_string(index=False))
+
+# Save summary tables
+risk_by_employment.to_sql('risk_by_employment', conn, if_exists='replace', index=False)
+risk_by_purpose.to_sql('risk_by_purpose', conn, if_exists='replace', index=False)
+credit_band_analysis.to_sql('credit_band_analysis', conn, if_exists='replace', index=False)
+
+print("\n  SQL analysis complete - summary tables written to {}".format(db_path))
+
+# 5 Logistic Regression
+
+
+# Feature selection
+feature_cols = [
+    'Age', 'AnnualIncome', 'CreditScore', 'Experience',
+    'LoanAmount', 'LoanDuration', 'NumberOfDependents',
+    'MonthlyDebtPayments', 'CreditCardUtilizationRate',
+    'NumberOfOpenCreditLines', 'NumberOfCreditInquiries',
+    'DebtToIncomeRatio', 'BankruptcyHistory', 'PreviousLoanDefaults',
+    'PaymentHistory', 'LengthOfCreditHistory', 'SavingsAccountBalance',
+    'CheckingAccountBalance', 'TotalAssets', 'TotalLiabilities',
+    'MonthlyIncome', 'UtilityBillsPaymentHistory', 'JobTenure',
+    'NetWorth', 'BaseInterestRate', 'InterestRate',
+    'MonthlyLoanPayment', 'TotalDebtToIncomeRatio',
+    'LoanToIncomeRatio', 'AssetCoverageRatio',
+    'MonthlyPaymentBurden', 'HighRiskFlag',
+    'ApplicationYear', 'ApplicationMonth'
+]
+
+available_features = [col for col in feature_cols if col in df_encoded.columns]
+
+X = df_encoded[available_features]
+y = df_encoded['LoanApproved']
+
+# Stratified 80/20 train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+# Scale features
+# StandardScaler normalizes each feature to mean=0, std=1
+# Financial features span very different ranges so scaling is critical
+# Fit on train only - never fit on test data to prevent data leakage
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Train logistic regression. We used 42 because of Hitchhikers guide to the galaxy
+model = LogisticRegression(
+    class_weight='balanced',
+    max_iter=1000,
+    random_state=42,
+    solver='lbfgs'
+)
+model.fit(X_train_scaled, y_train)
+print("  Model training complete")
+
+# Evaluate
+y_pred = model.predict(X_test_scaled)
+y_prob = model.predict_proba(X_test_scaled)[:, 1]
+auc_score = roc_auc_score(y_test, y_prob)
+
+print("\n  Classification Report:")
+print(classification_report(y_test, y_pred, target_names=['Denied', 'Approved']))
+print("  ROC-AUC Score: {:.4f}".format(auc_score))
+
+# Feature importance
+feature_importance = pd.DataFrame({
+    'Feature': available_features,
+    'Coefficient': model.coef_[0]
+}).sort_values('Coefficient', ascending=False)
+
+print("\n  Top 10 features INCREASING approval probability:")
+print(feature_importance.head(10)[['Feature', 'Coefficient']].to_string(index=False))
+
+print("\n  Top 10 features DECREASING approval probability:")
+print(feature_importance.tail(10)[['Feature', 'Coefficient']].to_string(index=False))
+
+#  Export
+
+
+# Confusion Matrix and ROC Curve
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+fig.suptitle(
+    "Financial Risk - Loan Approval Prediction Results",
+    fontsize=14, fontweight='bold'
+)
+
+cm = confusion_matrix(y_test, y_pred)
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=cm,
+    display_labels=['Denied', 'Approved']
+)
+disp.plot(ax=axes[0], colorbar=False, cmap='Blues')
+axes[0].set_title("Confusion Matrix")
+
+fpr, tpr, _ = roc_curve(y_test, y_prob)
+axes[1].plot(fpr, tpr, color='steelblue', lw=2,
+             label='ROC Curve (AUC = {:.4f})'.format(auc_score))
+axes[1].plot([0, 1], [0, 1], color='gray', linestyle='--', label='Random Classifier')
+axes[1].set_xlabel('False Positive Rate')
+axes[1].set_ylabel('True Positive Rate')
+axes[1].set_title('ROC Curve')
+axes[1].legend(loc='lower right')
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("financial_risk_model_results.png", dpi=150, bbox_inches='tight')
+#plt.show()
+
+# Export CSV
+results_df = df.loc[X_test.index].copy()
+results_df['PredictedApproval'] = y_pred
+results_df['ApprovalProbability'] = y_prob.round(4)
+results_df['PredictionCorrect'] = (y_pred == y_test.values).astype(int)
+results_df.to_csv("loan_predictions.csv", index=False)
+
+risk_by_employment.to_csv("risk_by_employment.csv", index=False)
+risk_by_purpose.to_csv("risk_by_purpose.csv", index=False)
+credit_band_analysis.to_csv("credit_band_analysis.csv", index=False)
+
+conn.close()
+
+
+print("  Database: financial_risk.db")
+print("  Predictions: loan_predictions.csv ({:,} records)".format(len(results_df)))
+print("  SQL summaries: risk_by_employment.csv, risk_by_purpose.csv, credit_band_analysis.csv")
+print("  Visualizations: financial_risk_model_results.png")
+print("  ROC-AUC Score: {:.4f}".format(auc_score))
