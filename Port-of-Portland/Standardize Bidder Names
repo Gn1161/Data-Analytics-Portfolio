@@ -5,8 +5,8 @@ Author: Grace Fell
 Project: Oregon State University MBA Capstone — BANA577
 
 Description:
-    Entity resolution pipeline that standardizes inconsistent contractor
-    (bidder) name formats across Port of Portland bid tabulation data.
+     standardizes inconsistent contractor
+    (bidder) name formats across Port of Portland bid  data.
 
     In real world procurement data, the same contractor may appear under
     dozens of slightly different name variations across bid tabs:
@@ -15,7 +15,7 @@ Description:
         "SMITH CONSTRUCTION LLC"
         "Smith Const. LLC"
 
-    Without standardization, these are treated as separate entities —
+    Without standardization, these are treated as separate entities
     making contractor performance analysis, pricing comparisons, and
     competitive bid analysis unreliable.
 
@@ -25,7 +25,7 @@ Description:
                   token sort ratio matching (rapidfuzz)
         Stage 3 — Finalize: Restore proper case and company suffixes
 
-Pipeline:
+Steps:
     1. Load structured bid tab master dataset
     2. Normalize all bidder names (lowercase, remove punctuation)
     3. Fuzzy match normalized names to build deduplication mapping
@@ -42,7 +42,7 @@ import pandas as pd
 import re
 from rapidfuzz import process, fuzz
 
-# 1. LOAD DATA
+# 1. Load Data
 
 # Input is the structured master dataset produced by Data_Sheet_Formation.py
 input_file = "cleaned_bidtab_master.xlsx"
@@ -50,11 +50,12 @@ df = pd.read_excel(input_file)
 
 print(f" Data loaded: {len(df):,} records, {df['BidderName'].nunique()} unique raw bidder names")
 
-# 2. NORMALIZATION FUNCTION 
+# 2. Normalization
+
 def normalize_name(name):
     
-    Normalize a bidder name by removing formatting inconsistencies
-    that would prevent accurate fuzzy matching.
+    #Normalize a bidder name by removing formatting inconsistencies
+    #that would prevent accurate fuzzy matching.
 
     Normalization steps:
         1. Handle null values return empty string
@@ -86,7 +87,7 @@ def normalize_name(name):
 # Apply normalization to all bidder names
 df['NormalizedBidderName'] = df['BidderName'].apply(normalize_name)
 
-# 3. FUZZY MATCHING — BUILD DEDUPLICATION MAPPING
+# 3. Fuzzy Matching
 
 # Extract unique normalized names to deduplicate
 unique_names = df['NormalizedBidderName'].unique()
@@ -123,7 +124,7 @@ print(f" Fuzzy matching complete")
 print(f"   Raw unique names: {len(unique_names)}")
 print(f"   Canonical names after deduplication: {len(set(name_mapping.values()))}")
 
-#  4. FINALIZE STANDARDIZED NAMES
+#  4. Finalize Names
 
 def finalize_name(name):
     """
@@ -166,7 +167,7 @@ def finalize_name(name):
 # Apply finalized standardized name to every row in the dataset
 df['StandardizedBidderName'] = df['BidderName'].apply(finalize_name)
 
-# 5. EXPORT 
+# 5. Export 
 
 output_file = "bidder_names_standardized.xlsx"
 df.to_excel(output_file, index=False)
