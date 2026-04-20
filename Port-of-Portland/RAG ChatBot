@@ -6,14 +6,15 @@ Project: Oregon State University MBA Capstone — BANA577
 
 Description:
     AI-powered Retrieval-Augmented Generation (RAG) chatbot that enables
-    natural language querying of the full Port of Portland bid tabulation
+    natural language querying of the full Port of Portland bid
     database (2021-2024).
 
     Traditional bid tab analysis requires analysts to manually search through
     hundreds of PDF sheets to find specific contractors, items, or pricing.
     This chatbot transforms that workflow allowing any stakeholder to ask
     plain English questions and receive accurate, source-grounded answers
-    drawn directly from the bid data from the Excel sheet.
+    drawn directly from the bid data from the Excel sheet that was created during
+    this project.
 
     Example queries:
         "Which contractors bid on airfield pavement projects in 2023?"
@@ -21,7 +22,7 @@ Description:
         "Show me all bids that included electrical conduit work"
 
 How RAG Works:
-    Traditional LLMs (like GPT-4) are trained on general knowledge and cannot
+    Traditional LLMs are trained on general knowledge and cannot
     answer questions about proprietary or domain-specific data. RAG solves this
     by combining two components:
 
@@ -39,8 +40,8 @@ How RAG Works:
     the bid database without requiring any SQL knowledge or manual Excel searching.
 
 Architecture:
-    Excel Bid Tabs -> LangChain Documents -> OpenAI Embeddings -> FAISS Vector Store
-    User Query -> Semantic Search -> Retrieved Context -> GPT-4 -> Natural Language Answer
+    Excel Bid Tabs to LangChain Documents to OpenAI Embeddings to FAISS Vector Store
+    User Query to Semantic Search to Retrieved Context  to GPT-4 to Natural Language Answer
 
 Prerequisites:
     pip install langchain langchain-openai langchain-community faiss-cpu pandas openai
@@ -61,7 +62,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
 
-#  1. API KEY CONFIGURATION 
+#  1. API Key
 
 # IMPORTANT: Never hardcode API keys in source code.
 # Set your OpenAI API key as an environment variable before running this script.
@@ -77,7 +78,7 @@ if not os.environ.get("OPENAI_API_KEY"):
         "before running this script. See the docstring above for instructions."
     )
 
-#  2. LOAD BID TAB DATA 
+#  2. Load Data
 
 input_file = "All 2021-2024 Bid Tabs (1).xlsx"
 xls = pd.ExcelFile(input_file)
@@ -85,7 +86,7 @@ xls = pd.ExcelFile(input_file)
 print(f"✅ Loaded bid tab file: {len(xls.sheet_names)} bid sheets found")
 print("Building document corpus for vector store...\n")
 
-#  3. CONVERT BID DATA TO LANGCHAIN DOCUMENTS 
+#  3. Conversion
 
 # Transform each row of each bid sheet into a LangChain Document object
 
@@ -141,7 +142,7 @@ for sheet_name in xls.sheet_names:
 
 print(f" Document corpus built: {len(documents):,} documents from {len(xls.sheet_names)} bid sheets")
 
-#  4. GENERATE EMBEDDINGS & BUILD FAISS VECTOR STORE 
+#  4. Generate Embeddings & Build FAISS Vector Store 
 
 # Embed all documents and store in a FAISS vector database
 
@@ -165,7 +166,7 @@ vectorstore = FAISS.from_documents(documents, embeddings)
 
 print(" Vector store built successfully")
 
-#  5. BUILD RAG RETRIEVAL CHAIN 
+#  5. Build Rag Retrieval
 
 # Assemble the RAG chain combining retrieval and generation
 
@@ -195,7 +196,7 @@ qa_chain = RetrievalQA.from_chain_type(
 
 print(" RAG chain initialized — chatbot ready\n")
 
-#  6. INTERACTIVE TERMINAL INTERFACE 
+#  6. Interactive Terminal
 
 print("=" * 60)
 print("Port of Portland Bid Intelligence Chatbot")
