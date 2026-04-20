@@ -7,7 +7,7 @@ data from the Port of Portland (2021-2024). Transforms manually searched PDF
 bid tabs into a structured, searchable intelligence system that supports
 lowest-cost contractor identification and procurement decision making.
 
-Business Problem
+Business Problem:
 The Port of Portland manages hundreds of infrastructure bids annually across
 roadwork, electrical, drainage, airfield, and marine project types. Bid
 tab data existed only in inconsistently formatted PDF files — making
@@ -17,30 +17,6 @@ This system solves that by building a full analytical pipeline from raw data
 extraction through NLP clustering, project classification, and an AI-powered
 natural language chatbot.
 
-Pipeline Architecture
-Raw PDF Bid Tabs
-      |
-      v
-Data_Sheet_Formation.py       -- Extract and structure unstructured bid data
-      |
-      v
-Standardized_Bidder_Names.py  -- Entity resolution via fuzzy matching
-      |
-      v
-NLP_Clustering.py             -- Initial K-means clustering of line items
-      |
-      v
-Refining Clustering.py               -- Refined clustering with silhouette optimization
-                                 and hierarchical subclustering
-      |
-      v
-Job_Type_Clustering.py       -- Bid-level project type classification
-      |
-      v
-Bid_Count_Trend.py            -- Time series analysis of procurement activity
-      |
-      v
-BANA577_PoP_Chatbot.py        -- RAG chatbot for natural language bid queries
 
 
 Key Analytical Findings
