@@ -8,9 +8,9 @@ Description:
     Third-stage clustering pipeline that classifies entire bids by project
     type based on the aggregate material composition of each bid.
 
-    While Refining Clustering operates at the LINE ITEM level, categorizing
+    While Refining Clustering operates at the line item level, categorizing
     individual materials and work types this script operates at the
-    BID level, asking: "What kind of construction project is this bid for?"
+    Bid level, asking: "What kind of construction project is this bid for?"
 
     The key insight driving this approach:
         A bid containing mostly asphalt, milling, and pavement marking items
@@ -27,7 +27,7 @@ Description:
     creates a complete analytical hierarchy for procurement intelligence:
         Line Item; Material Category; Project Type; Business Decision
 
-Pipeline:
+Steps:
     1. Load fully labeled material-level dataset
     2. Aggregate item descriptions per bid into combined documents
     3. Apply custom stopwords tuned for project-type discrimination
@@ -54,7 +54,7 @@ import nltk
 
 nltk.download('stopwords', quiet=True)
 
-# 1. LOAD DATA 
+# 1 Load Data 
 
 input_file = "clustered_full_output_520.csv"
 df = pd.read_csv(input_file)
@@ -69,7 +69,7 @@ print(f" Data loaded: {len(df):,} records across {df['BidNumber'].nunique()} uni
 # Why aggregate to the bid level?
 #   Item-level clustering tells us what individual materials are present.
 #   But to classify what KIND of project a bid represents, we need to look
-#   at the full picture of what's being bid — not individual line items.
+#   at the full picture of what's being bid not individual line items.
 
 #  Having all item descriptions into one document per bid creates
 #   a "bag of materials" representation that captures the overall project
@@ -78,7 +78,8 @@ print(f" Data loaded: {len(df):,} records across {df['BidNumber'].nunique()} uni
 
 # Why lowercase?
 #   Ensures consistent term matching across bids where the same material
-#   may be described with different capitalization conventions.
+#   may be described with different capitalization conventions. There could have been
+#   uppercase but, it is more common to work with lowercase
 
 df_grouped = (
     df.groupby('BidNumber')['ItemDescription_Cleaned']
@@ -89,12 +90,12 @@ df_grouped.columns = ['BidNumber', 'CombinedMaterialDescription']
 
 print(f" Aggregated {df['BidNumber'].nunique()} bids into combined material documents")
 
-# 3. DEFINE STOPWORDS 
+# 3 Stopwords
 
 # Build combined stopword list: standard English + custom domain terms
 
 # Custom stopwords were identified by reviewing the most frequent terms
-# across all bid documents that appeared in nearly every project type —
+# across all bid documents that appeared in nearly every project type
 # making them useless for discriminating between project categories.
 
 # For example:
@@ -115,12 +116,13 @@ custom_stopwords = {
 default_stopwords = set(stopwords.words('english'))
 all_stopwords = list(default_stopwords.union(custom_stopwords))
 
-# 4. TF-IDF VECTORIZATION
+# 4. TF-IDF vectorzation
 
-# Vectorize combined bid documents into TF-IDF feature matrix
+# Vectorize combined bid documents into TF-IDF feature matrix. For me, this is 
+# always one of the more complicated steps 
 
 # At the bid level, TF-IDF identifies terms that are frequent within a
-# specific bid's material scope but rare across all bids — the signature
+# specific bid's material scope but rare across all bids the signature
 # materials that make each project type distinctive.
 
 # max_df=0.85: Removes terms appearing in >85% of all bids (too universal)
@@ -135,7 +137,7 @@ X = vectorizer.fit_transform(df_grouped['CombinedMaterialDescription'])
 
 print(f" TF-IDF vectorization complete: {X.shape[1]} features across {X.shape[0]} bid documents")
 
-# 5. SILHOUETTE SCORE OPTIMIZATION
+# 5. Silhoutte Score Optimization
 
 # Find the optimal number of project type clusters 
 
@@ -144,7 +146,6 @@ print(f" TF-IDF vectorization complete: {X.shape[1]} features across {X.shape[0]
 # The upper bound of 15 is based on the expected diversity of project types
 # in Port of Portland infrastructure bids.
 
-print("\nEvaluating silhouette scores to find optimal project type count...\n")
 
 sil_scores = []
 K_range = range(2, min(len(df_grouped), 15))
@@ -159,7 +160,7 @@ for k in K_range:
 best_k = max(sil_scores, key=lambda x: x[1])[0]
 print(f"\n Optimal project type cluster count: {best_k}")
 
-# 6. FINAL CLUSTERING 
+# 6. Final Clustering
 
 final_model = KMeans(
     n_clusters=best_k,
@@ -170,16 +171,16 @@ final_labels = final_model.fit_predict(X)
 df_grouped['JobTypeCluster'] = final_labels
 
 
-# 7. EXTRACT TOP KEYWORDS PER CLUSTER 
+# 7.  Top Keywords per cluster
 
 def get_top_keywords(model, feature_names, top_n=5):
     
-    Extract the top N keywords for each cluster based on centroid weights.
+    #Extract the top N keywords for each cluster based on centroid weights.
 
-    These keywords represent the most characteristic materials for each
-    project type, used to validate that clusters are semantically meaningful
-    and to generate interpretable auto-generated labels before applying
-    human-reviewed business labels.
+    # These keywords represent the most characteristic materials for each
+    # project type, used to validate that clusters are semantically meaningful
+    # and to generate interpretable auto-generated labels before applying
+    # human-reviewed business labels.
     
     keywords = {}
     for i in range(model.n_clusters):
@@ -202,7 +203,7 @@ df_grouped['JobTypeLabel'] = df_grouped['JobTypeCluster'].map(
 df_grouped.to_csv("job_type_clusters_by_bid.csv", index=False)
 print(f"\n Job type clustering complete — results saved to job_type_clusters_by_bid.csv")
 
-# 8. MERGE PROJECT TYPE LABELS TO MATERIAL-LEVEL DATA 
+# 8 Merge
 
 # Reload full material-level dataset and merge project type assignments
 
@@ -221,7 +222,7 @@ merged = full_data.merge(
 
 print(f" Merged project type labels to {len(merged):,} material-level records")
 
-#  9. APPLY BUSINESS-MEANINGFUL PROJECT TYPE LABELS 
+#  9. Business project labels 
 
 # Map numeric cluster IDs to human-readable project type names
 
@@ -246,7 +247,7 @@ project_type_labels = {
 
 merged['ProjectTypeLabel'] = merged['JobTypeCluster'].map(project_type_labels)
 
-# 10. SUMMARIZE AND EXPORT
+# 10. Export
 
 # Create project type summary — bid count, item count, and top keywords per type
 summary = merged.groupby('JobTypeCluster').agg(
@@ -262,7 +263,7 @@ summary['ProjectTypeLabel'] = summary['JobTypeCluster'].map(project_type_labels)
 merged.to_csv("merged_materials_with_project_types.csv", index=False)
 summary.to_csv("job_type_cluster_summary.csv", index=False)
 
-print(f"\n Pipeline complete")
+
 print(f"   Merged dataset saved to: merged_materials_with_project_types.csv")
 print(f"   Summary saved to: job_type_cluster_summary.csv")
 print(f"   Total records: {len(merged):,}")
