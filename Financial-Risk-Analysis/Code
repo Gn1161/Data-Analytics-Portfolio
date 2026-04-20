@@ -67,7 +67,9 @@ df['ApplicationMonth'] = df['ApplicationDate'].dt.month
 
 # Handle missing values, always critical with dataset
 # Numeric: fill with median - robust to outliers in financial data
-# Categorical: fill with mode - most common category
+# mean could give you the outliers and make the data less clear when it comes to analysis
+# especially dealing with financial data
+# Categorical: fill with mode, make the most sense to use the most common category
 numeric_cols = df.select_dtypes(include=[np.number]).columns
 categorical_cols = df.select_dtypes(include=['object']).columns
 
